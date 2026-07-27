@@ -61,6 +61,9 @@
         <span class="navbar-text mr-auto">{% block content_title %}{% endblock %}</span>
         {% if dataset.is_readonly %}
           <a class="btn btn-sm btn-secondary" href="{{ url_for('generic_query') }}">Query</a>
+          {% if saved_queries %}
+            <a class="btn btn-sm btn-secondary" href="{{ url_for('saved_queries') }}">Saved</a>
+          {% endif %}
         {% else %}
           <form action="{{ url_for('table_create') }}" class="form-inline" method="post">
             <input name="redirect" type="hidden" value="{{ request.full_path }}" />{# full-path begins with "/" and includes querystring #}
@@ -68,6 +71,9 @@
             <button class="btn btn-primary btn-sm" type="submit">Create</button>
             &nbsp;
             <a class="btn btn-sm btn-secondary" href="{{ url_for('generic_query') }}">Query</a>
+            {% if saved_queries %}
+              <a class="btn btn-sm btn-secondary" href="{{ url_for('saved_queries') }}">Saved</a>
+            {% endif %}
           </form>
         {% endif %}
         {% if datasets|length() > 1 and (enable_load or enable_filesystem) %}

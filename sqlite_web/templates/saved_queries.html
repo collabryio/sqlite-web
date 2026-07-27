@@ -1,0 +1,33 @@
+{% extends "base_tables.html" %}
+
+{% block content_title %}Saved Queries{% endblock %}
+
+{% block content %}
+  <h3>Saved Queries</h3>
+  <p class="text-muted">Read-only catalog configured in <code>sqlite_web/query_config.py</code>.</p>
+
+  {% if not saved_queries %}
+    <p>No saved queries configured.</p>
+  {% else %}
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Description</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for query in saved_queries %}
+          <tr>
+            <td>{{ query.title }}</td>
+            <td>{{ query.description }}</td>
+            <td class="text-right">
+              <a class="btn btn-sm btn-primary" href="{{ url_for('generic_query', saved_query=query.id) }}">Run</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

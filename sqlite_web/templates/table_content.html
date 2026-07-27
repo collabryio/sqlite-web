@@ -22,8 +22,12 @@
           <th style="width:24px;"><input id="toggle-pk-all" type="checkbox" /></th>
         {% endif %}
         {% for column in columns %}
-          <th>
-            <a href="./?ordering={% if ordering == column %}-{% endif %}{{ column }}">{{ column }}</a>
+          <th{% if column in label_columns %} class="text-muted"{% endif %}>
+            {% if column in label_columns %}
+              {{ column }}
+            {% else %}
+              <a href="./?ordering={% if ordering == column %}-{% endif %}{{ column }}">{{ column }}</a>
+            {% endif %}
           </th>
         {% endfor %}
         {% if allow_edit %}<th></th>{% endif %}
@@ -40,7 +44,7 @@
           {% endif %}
           {% for field in field_names %}
             {% set value = row[field] %}
-            <td>
+            <td{% if field in label_columns %} class="text-muted"{% endif %}>
               {% if value is none %}
                 <code>NULL</code>
               {% else %}

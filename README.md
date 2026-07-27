@@ -56,6 +56,35 @@ Then navigate to http://localhost:8080/ to view your database.
 * Browse table data.
 * Insert, Update or Delete rows.
 * Load and unload databases at run-time (see `--enable-load` or `--enable-filesystem`)
+* Saved query catalog and configurable foreign-key label columns (see below)
+
+### Saved queries and foreign-key labels
+
+Edit [`sqlite_web/query_config.py`](sqlite_web/query_config.py) before starting the app.
+
+**Saved queries** — read-only catalog in `SAVED_QUERIES`. Each entry has `id`, `title`, `description`, and `sql`. Open **Saved** in the navbar or visit `/saved-queries/`. SQL is resolved server-side by id only.
+
+**Foreign-key labels** — map local FK columns to a display column on the referenced table in `FOREIGN_KEY_LABELS`. On the table **Content** tab, each mapped FK gets a `<column>_label` column via paginated `LEFT JOIN` (original FK value kept).
+
+Example:
+
+```python
+ForeignKeyLabel(
+    local_table='orders',
+    local_column='customer_id',
+    referenced_table='customers',
+    referenced_key='id',
+    display_column='name'),
+```
+
+**Large databases (~10 GB):**
+
+* Index every local FK column, e.g. `CREATE INDEX orders_customer_id ON orders(customer_id);`
+* Referenced key must be primary key or unique index
+* Saved queries should use indexed `WHERE` clauses and `LIMIT`
+* Content pagination keeps joins bounded to one page; table `COUNT(*)` still runs on full table browse
+
+Run tests: `python3 -m unittest tests.test_query_config`
 
 ### Screenshots
 

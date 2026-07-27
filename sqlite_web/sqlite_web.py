@@ -73,6 +73,17 @@ from peewee import sqlite3
 from playhouse.dataset import DataSet
 from playhouse.migrate import migrate
 
+from sqlite_web.content_query import (
+    build_labeled_content_sql,
+    fetch_labeled_content_rows,
+    label_column_alias)
+from sqlite_web.query_config import (
+    ConfigError,
+    get_foreign_key_labels_for_table,
+    get_saved_query_by_id,
+    validate_foreign_key_label_indexes,
+    validate_query_config)
+
 
 CUR_DIR = os.path.realpath(os.path.dirname(__file__))
 DEBUG = False
@@ -90,6 +101,8 @@ app = Flask(
 app.config.from_object(__name__)
 datasets = {}
 dataset_config = {}
+SAVED_QUERIES = ()
+FOREIGN_KEY_LABELS = ()
 
 #
 # Database metadata objects.
@@ -383,14 +396,30 @@ def unload():
 
     return render_template('unload.html', selected=dataset)
 
+def _resolve_query_sql(sql, saved_query_id):
+    if saved_query_id:
+        saved_query = get_saved_query_by_id(saved_query_id, SAVED_QUERIES)
+        if saved_query is None:
+            return None, 'Unknown saved query: %s' % saved_query_id
+        return saved_query.sql, None
+    return sql, None
+
 def _query_view(template, table=None):
     dataset = get_dataset()
     data = []
     data_description = error = row_count = sql = None
     ordering = None
     pk_index = None
+    saved_query_id = request.values.get('saved_query') or ''
 
     sql = qsql = request.values.get('sql') or ''
+    if saved_query_id:
+        sql, lookup_error = _resolve_query_sql('', saved_query_id)
+        if lookup_error:
+            error = lookup_error
+            sql = qsql = ''
+        else:
+            qsql = sql
 
     if 'export_json' in request.values:
         ordering = request.values.get('export_ordering')
@@ -505,6 +534,8 @@ def _query_view(template, table=None):
         pk_index=pk_index,
         query_images=get_query_images(),
         row_count=row_count,
+        saved_query_id=saved_query_id or None,
+        saved_queries=SAVED_QUERIES,
         sql=sql,
         table=table,
         table_sql=dataset.get_table_sql(table),
@@ -514,6 +545,12 @@ def _query_view(template, table=None):
 @app.route('/query/', methods=['GET', 'POST'])
 def generic_query():
     return _query_view('query.html')
+
+@app.route('/saved-queries/', methods=['GET'])
+def saved_queries():
+    return render_template(
+        'saved_queries.html',
+        saved_queries=SAVED_QUERIES)
 
 def require_table(fn):
     @wraps(fn)
@@ -816,19 +853,33 @@ def table_content(table):
     previous_page = page_number - 1 if page_number > 1 else None
     next_page = page_number + 1 if page_number < total_pages else None
 
-    query = ds_table.all().paginate(page_number, rows_per_page)
-
     ordering = request.args.get('ordering')
-    if ordering:
-        field = model._meta.columns[ordering.lstrip('-')]
-        if ordering.startswith('-'):
-            field = field.desc()
-        query = query.order_by(field)
+    fk_labels = get_foreign_key_labels_for_table(table, FOREIGN_KEY_LABELS)
+    label_columns = []
+
+    if fk_labels:
+        offset = (page_number - 1) * rows_per_page
+        content_sql = build_labeled_content_sql(
+            table,
+            fk_labels,
+            ordering=ordering,
+            limit=rows_per_page,
+            offset=offset)
+        columns, query = fetch_labeled_content_rows(dataset, content_sql)
+        field_names = columns
+        label_columns = [label_column_alias(label.local_column)
+                         for label in fk_labels]
+    else:
+        query = ds_table.all().paginate(page_number, rows_per_page)
+        if ordering:
+            field = model._meta.columns[ordering.lstrip('-')]
+            if ordering.startswith('-'):
+                field = field.desc()
+            query = query.order_by(field)
+        field_names = ds_table.columns
+        columns = [f.column_name for f in ds_table.model_class._meta.sorted_fields]
 
     session['%s.last_viewed' % table] = (page_number, ordering)
-
-    field_names = ds_table.columns
-    columns = [f.column_name for f in ds_table.model_class._meta.sorted_fields]
 
     return render_template(
         'table_content.html',
@@ -838,6 +889,7 @@ def table_content(table):
         ds_table=ds_table,
         field_names=field_names,
         is_composite_pk=isinstance(model._meta.primary_key, CompositeKey),
+        label_columns=label_columns,
         next_page=next_page,
         ordering=ordering,
         page=page_number,
@@ -1361,6 +1413,7 @@ def _general():
         'enable_load': app.config.get('ENABLE_LOAD'),
         'enable_filesystem': app.config.get('ENABLE_FILESYSTEM'),
         'login_required': bool(app.config.get('PASSWORD')),
+        'saved_queries': SAVED_QUERIES,
         'version': __version__,
     }
 
@@ -1371,7 +1424,7 @@ def _now():
 @app.before_request
 def _connect_db():
     dataset = get_dataset()
-    dataset.connect()
+    dataset._database.connect(reuse_if_open=True)
     if dataset_config.get('startup_hook'):
         dataset_config['startup_hook'](dataset._database)
 
@@ -1609,9 +1662,19 @@ def initialize_dataset(filename):
     return dataset
 
 def initialize_app(filenames, read_only=False, password=None, url_prefix=None,
-                   extensions=None, foreign_keys=None, startup_hook=None):
+                   extensions=None, foreign_keys=None, startup_hook=None,
+                   saved_queries=None, foreign_key_labels=None):
     global datasets
     global dataset_config
+    global SAVED_QUERIES
+    global FOREIGN_KEY_LABELS
+
+    try:
+        SAVED_QUERIES, FOREIGN_KEY_LABELS = validate_query_config(
+            saved_queries=saved_queries,
+            foreign_key_labels=foreign_key_labels)
+    except ConfigError as exc:
+        die('Invalid query configuration: %s' % exc)
 
     dataset_config.update(
         read_only=read_only,
@@ -1627,6 +1690,18 @@ def initialize_app(filenames, read_only=False, password=None, url_prefix=None,
 
     for filename in filenames:
         datasets[os.path.basename(filename)] = initialize_dataset(filename)
+
+    for dataset in datasets.values():
+        was_closed = dataset._database.is_closed()
+        if was_closed:
+            dataset.connect(reuse_if_open=True)
+        try:
+            for warning in validate_foreign_key_label_indexes(
+                    dataset, FOREIGN_KEY_LABELS):
+                app.logger.warning(warning)
+        finally:
+            if was_closed and not dataset._database.is_closed():
+                dataset.close()
 
 def configure_app():
     # This function exists to act as a console script entry-point.
