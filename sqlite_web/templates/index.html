@@ -45,10 +45,129 @@
   </table>
   <hr />
   <h3>Query</h3>
+  <div class="form-group">
+    <label for="saved-query-select">Saved queries</label>
+    <div class="input-group">
+      <select class="form-control" id="saved-query-select">
+        <option value="">Select a saved query...</option>
+        {% for query in saved_queries %}
+          <option value="{% if query.source == 'user' %}{{ url_for('generic_query', user_saved_query=query.id) }}{% else %}{{ url_for('generic_query', saved_query=query.id) }}{% endif %}">
+            {{ query.title }}{% if query.source == 'user' %} (custom){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+      <div class="input-group-append">
+        <a class="btn btn-secondary" href="#" id="run-saved-query">Run</a>
+        <a class="btn btn-outline-secondary" href="{{ url_for('saved_queries') }}">All</a>
+      </div>
+    </div>
+    <small class="form-text text-muted" id="saved-query-descriptions">
+      {% for query in saved_queries %}
+        <span class="d-block"><strong>{{ query.title }}{% if query.source == 'user' %} (custom){% endif %}</strong> — {{ query.description }}</span>
+      {% else %}
+        <span class="d-block text-muted">No saved queries yet. Use + to save one.</span>
+      {% endfor %}
+    </small>
+  </div>
+  <div id="dashboard-save-query-error"></div>
   <form action="{{ url_for('generic_query') }}" method="post" role="form">
     <div class="form-group">
-      <textarea class="form-control" name="sql" placeholder="Execute SQL query..." style="height: 120px;"></textarea>
+      <textarea class="form-control" id="dashboard-sql" name="sql" placeholder="Execute SQL query..." style="height: 120px;"></textarea>
     </div>
     <button class="btn btn-primary" type="submit">Execute</button>
+    <button class="btn btn-secondary" id="dashboard-add-saved-query" title="Save Query" type="button">+</button>
   </form>
+
+  <hr />
+  <h3>Join Query Builder</h3>
+  <p class="text-muted">Build SELECT queries from foreign-key relationships. Default limit keeps large databases responsive.</p>
+  <div class="form-group">
+    <label for="join-base-table">Base table</label>
+    <select class="form-control" id="join-base-table"></select>
+  </div>
+  <div class="form-group">
+    <label>Suggested joins</label>
+    <div id="join-builder-joins"></div>
+  </div>
+  <div class="form-group">
+    <label>Output columns</label>
+    <div id="join-builder-columns"></div>
+  </div>
+  <div class="form-group">
+    <label for="join-builder-limit">Limit</label>
+    <input class="form-control" id="join-builder-limit" type="number" min="1" value="100" />
+    <small class="form-text text-muted">Leave blank only if you accept a full-table scan.</small>
+  </div>
+  <div id="join-builder-warnings"></div>
+  <div class="form-group">
+    <label for="join-builder-sql">SQL preview</label>
+    <textarea class="form-control" id="join-builder-sql" readonly style="height: 120px;"></textarea>
+  </div>
+  <button class="btn btn-primary" id="join-builder-build" type="button">Build SQL</button>
+  <button class="btn btn-secondary" id="join-builder-run" type="button">Run Query</button>
+  <button class="btn btn-outline-secondary" id="join-builder-copy" type="button">Copy SQL</button>
+
+  <div class="modal fade" id="dashboard-save-query-modal" role="dialog">
+    <div class="modal-dialog modal-sm" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Save Query</h5>
+          <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+        <div class="modal-body">
+          <form id="dashboard-save-query-form" role="form">
+            <div class="form-group">
+              <input class="form-control" id="dashboard-save-query-name" name="name" placeholder="Query name..." value="" />
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" id="dashboard-save-query-save">Save</button>
+          <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block extra_scripts %}
+  <script src="{{ url_for('static', filename='js/join_builder.js') }}" type="text/javascript"></script>
+  <script src="{{ url_for('static', filename='js/dashboard_saved_queries.js') }}" type="text/javascript"></script>
+  <script type="text/javascript">
+    $(function() {
+      $('#run-saved-query').on('click', function(e) {
+        e.preventDefault();
+        var url = $('#saved-query-select').val();
+        if (url) {
+          window.location = url;
+        }
+      });
+
+      var dashboardSavedQueries = new App.DashboardSavedQueries({
+        listUrl: {{ url_for('saved_queries_list')|tojson }},
+        saveUrl: {{ url_for('saved_queries_user')|tojson }},
+        sqlSelector: '#dashboard-sql',
+        selectSelector: '#saved-query-select',
+        descriptionsSelector: '#saved-query-descriptions',
+        modalSelector: '#dashboard-save-query-modal',
+        nameInputSelector: '#dashboard-save-query-name',
+        saveBtnSelector: '#dashboard-save-query-save',
+        addBtnSelector: '#dashboard-add-saved-query',
+        errorSelector: '#dashboard-save-query-error'
+      });
+      dashboardSavedQueries.initialize();
+
+      var joinBuilder = new App.JoinBuilder({
+        tablesUrl: {{ url_for('join_builder_tables')|tojson }},
+        tableUrlTemplate: {{ url_for('join_builder_table', table='__TABLE__')|tojson }},
+        suggestionsUrl: {{ url_for('join_builder_suggestions')|tojson }},
+        buildUrl: {{ url_for('join_builder_build')|tojson }},
+        queryUrl: {{ url_for('generic_query')|tojson }},
+        defaultLimit: 100
+      });
+      joinBuilder.initialize();
+    });
+  </script>
 {% endblock %}

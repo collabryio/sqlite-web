@@ -41,8 +41,13 @@ RUN apk update \
       && rm -rf ./sqlite/ ./sqlite.tar.gz \
       && pip install --upgrade pip \
       && pip install --no-cache-dir cython gevent \
-      && pip install --no-cache-dir flask peewee sqlite-web \
       && apk del .build-deps
+
+COPY pyproject.toml setup.py MANIFEST.in README.md /app/
+COPY sqlite_web /app/sqlite_web/
+WORKDIR /app
+RUN pip install --no-cache-dir .
+
 EXPOSE 8080
 VOLUME /data
 WORKDIR /data

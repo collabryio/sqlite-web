@@ -77,6 +77,21 @@ from sqlite_web.content_query import (
     build_labeled_content_sql,
     fetch_labeled_content_rows,
     label_column_alias)
+from sqlite_web.join_builder import (
+    JoinBuilderError,
+    DEFAULT_LIMIT,
+    build_join_query,
+    get_sorted_tables,
+    get_table_metadata,
+    suggest_joins_from_foreign_keys)
+from sqlite_web.user_saved_queries import (
+    UserSavedQueryError,
+    delete_user_saved_query,
+    get_user_saved_queries_path,
+    get_user_saved_query_by_id,
+    load_user_saved_queries_for_dataset,
+    save_user_saved_query,
+    serialize_user_saved_query)
 from sqlite_web.query_config import (
     ConfigError,
     get_foreign_key_labels_for_table,
@@ -266,6 +281,24 @@ def get_dataset():
         g.dataset = datasets[dataset_key]
     return g.dataset
 
+def serialize_config_saved_query(query):
+    return {
+        'id': query.id,
+        'title': query.title,
+        'description': query.description,
+        'source': 'config',
+    }
+
+def get_all_saved_queries(dataset):
+    queries = [serialize_config_saved_query(query) for query in SAVED_QUERIES]
+    user_queries, _ = load_user_saved_queries_for_dataset(dataset)
+    queries.extend(serialize_user_saved_query(query) for query in user_queries)
+    return queries
+
+def get_user_saved_queries_list(dataset):
+    user_queries, _ = load_user_saved_queries_for_dataset(dataset)
+    return [serialize_user_saved_query(query) for query in user_queries]
+
 #
 # Flask views.
 #
@@ -396,7 +429,15 @@ def unload():
 
     return render_template('unload.html', selected=dataset)
 
-def _resolve_query_sql(sql, saved_query_id):
+def _resolve_query_sql(sql, saved_query_id, user_saved_query_id=None, dataset=None):
+    if user_saved_query_id:
+        if dataset is None:
+            dataset = get_dataset()
+        path = get_user_saved_queries_path(dataset)
+        saved_query = get_user_saved_query_by_id(path, user_saved_query_id)
+        if saved_query is None:
+            return None, 'Unknown saved query: %s' % user_saved_query_id
+        return saved_query.sql, None
     if saved_query_id:
         saved_query = get_saved_query_by_id(saved_query_id, SAVED_QUERIES)
         if saved_query is None:
@@ -411,10 +452,15 @@ def _query_view(template, table=None):
     ordering = None
     pk_index = None
     saved_query_id = request.values.get('saved_query') or ''
+    user_saved_query_id = request.values.get('user_saved_query') or ''
 
     sql = qsql = request.values.get('sql') or ''
-    if saved_query_id:
-        sql, lookup_error = _resolve_query_sql('', saved_query_id)
+    if saved_query_id or user_saved_query_id:
+        sql, lookup_error = _resolve_query_sql(
+            '',
+            saved_query_id,
+            user_saved_query_id=user_saved_query_id,
+            dataset=dataset)
         if lookup_error:
             error = lookup_error
             sql = qsql = ''
@@ -536,6 +582,7 @@ def _query_view(template, table=None):
         row_count=row_count,
         saved_query_id=saved_query_id or None,
         saved_queries=SAVED_QUERIES,
+        user_saved_query_id=user_saved_query_id or None,
         sql=sql,
         table=table,
         table_sql=dataset.get_table_sql(table),
@@ -548,9 +595,55 @@ def generic_query():
 
 @app.route('/saved-queries/', methods=['GET'])
 def saved_queries():
+    dataset = get_dataset()
     return render_template(
         'saved_queries.html',
-        saved_queries=SAVED_QUERIES)
+        saved_queries=SAVED_QUERIES,
+        user_saved_queries=get_user_saved_queries_list(dataset))
+
+@app.route('/saved-queries/list/', methods=['GET'])
+def saved_queries_list():
+    dataset = get_dataset()
+    queries = []
+    for query in get_all_saved_queries(dataset):
+        item = dict(query)
+        if query['source'] == 'user':
+            item['run_url'] = url_for(
+                'generic_query', user_saved_query=query['id'])
+        else:
+            item['run_url'] = url_for(
+                'generic_query', saved_query=query['id'])
+        queries.append(item)
+    return jsonify({'queries': queries})
+
+@app.route('/saved-queries/user/', methods=['GET', 'POST'])
+def saved_queries_user():
+    dataset = get_dataset()
+    path = get_user_saved_queries_path(dataset)
+    if request.method == 'GET':
+        user_queries, _ = load_user_saved_queries_for_dataset(dataset)
+        return jsonify({
+            'queries': [serialize_user_saved_query(query) for query in user_queries],
+        })
+
+    payload = request.get_json(silent=True) or {}
+    name = payload.get('name') or request.form.get('name')
+    sql = payload.get('sql') or request.form.get('sql')
+    try:
+        saved = save_user_saved_query(path, name, sql)
+    except UserSavedQueryError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify({'query': serialize_user_saved_query(saved)})
+
+@app.route('/saved-queries/user/<query_id>/', methods=['DELETE'])
+def saved_queries_user_delete(query_id):
+    dataset = get_dataset()
+    path = get_user_saved_queries_path(dataset)
+    try:
+        delete_user_saved_query(path, query_id)
+    except UserSavedQueryError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify({'ok': True})
 
 def require_table(fn):
     @wraps(fn)
@@ -559,6 +652,53 @@ def require_table(fn):
             abort(404)
         return fn(table, *args, **kwargs)
     return inner
+
+@app.route('/join-builder/tables/', methods=['GET'])
+def join_builder_tables():
+    dataset = get_dataset()
+    return jsonify({'tables': get_sorted_tables(dataset)})
+
+@app.route('/join-builder/table/<table>/', methods=['GET'])
+@require_table
+def join_builder_table(table):
+    dataset = get_dataset()
+    return jsonify(get_table_metadata(dataset, table))
+
+@app.route('/join-builder/suggestions/', methods=['POST'])
+def join_builder_suggestions():
+    dataset = get_dataset()
+    payload = request.get_json(silent=True) or {}
+    base_table = payload.get('base_table')
+    joins_payload = payload.get('joins') or []
+    if not base_table or base_table not in dataset.tables:
+        return jsonify({'error': 'Unknown base table.'}), 400
+    try:
+        from sqlite_web.join_builder import parse_join_request, validate_join_request
+        columns = dataset.get_columns(base_table)
+        if not columns:
+            return jsonify({'error': 'Base table has no columns.'}), 400
+        request_stub = parse_join_request({
+            'base_table': base_table,
+            'joins': joins_payload,
+            'columns': [{'table_alias': 't', 'column': columns[0].name}],
+            'limit': DEFAULT_LIMIT,
+        })
+        validate_join_request(dataset, request_stub)
+        suggestions = suggest_joins_from_foreign_keys(
+            dataset, base_table, request_stub.joins)
+    except JoinBuilderError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify({'suggestions': suggestions})
+
+@app.route('/join-builder/build/', methods=['POST'])
+def join_builder_build():
+    dataset = get_dataset()
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = build_join_query(dataset, payload)
+    except JoinBuilderError as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify(result)
 
 @app.route('/create-table/', methods=['POST'])
 def table_create():
@@ -1407,13 +1547,14 @@ def get_query_images():
 
 @app.context_processor
 def _general():
+    dataset = get_dataset()
     return {
-        'dataset': get_dataset(),
+        'dataset': dataset,
         'datasets': datasets,
         'enable_load': app.config.get('ENABLE_LOAD'),
         'enable_filesystem': app.config.get('ENABLE_FILESYSTEM'),
         'login_required': bool(app.config.get('PASSWORD')),
-        'saved_queries': SAVED_QUERIES,
+        'saved_queries': get_all_saved_queries(dataset),
         'version': __version__,
     }
 

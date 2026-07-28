@@ -56,13 +56,17 @@ Then navigate to http://localhost:8080/ to view your database.
 * Browse table data.
 * Insert, Update or Delete rows.
 * Load and unload databases at run-time (see `--enable-load` or `--enable-filesystem`)
-* Saved query catalog and configurable foreign-key label columns (see below)
+* Saved query catalog, dashboard join query builder, and configurable foreign-key label columns (see below)
 
-### Saved queries and foreign-key labels
+### Saved queries, join builder, and foreign-key labels
 
 Edit [`sqlite_web/query_config.py`](sqlite_web/query_config.py) before starting the app.
 
 **Saved queries** — read-only catalog in `SAVED_QUERIES`. Each entry has `id`, `title`, `description`, and `sql`. Open **Saved** in the navbar or visit `/saved-queries/`. SQL is resolved server-side by id only.
+
+**Custom saved queries** — save SQL from the dashboard with the **+** button next to the query box. Stored in `<database>.saved_queries.json` beside the database file (for example `mydb.saved_queries.json` next to `mydb.db`). Custom queries appear in the dashboard saved-query list marked `(custom)`.
+
+**Join Query Builder** — on the dashboard (`/`), pick a base table, accept foreign-key join suggestions, choose output columns, preview SQL, and run it through the existing query executor. Generated SQL is built server-side with a default `LIMIT 100`.
 
 **Foreign-key labels** — map local FK columns to a display column on the referenced table in `FOREIGN_KEY_LABELS`. On the table **Content** tab, each mapped FK gets a `<column>_label` column via paginated `LEFT JOIN` (original FK value kept).
 
@@ -84,7 +88,7 @@ ForeignKeyLabel(
 * Saved queries should use indexed `WHERE` clauses and `LIMIT`
 * Content pagination keeps joins bounded to one page; table `COUNT(*)` still runs on full table browse
 
-Run tests: `python3 -m unittest tests.test_query_config`
+Run tests: `python3 -m unittest tests.test_query_config tests.test_join_builder tests.test_user_saved_queries`
 
 ### Screenshots
 
@@ -192,12 +196,11 @@ $ docker run -it --rm \
 # OR build the image yourself:
 #
 
-$ cd docker/  # Change dirs to the dir containing Dockerfile
-$ docker build -t coleifer/sqlite-web .
+$ docker build -f docker/Dockerfile -t sqlite-web:local .
 $ docker run -it --rm \
     -p 8080:8080 \
     -v /path/to/your-data:/data \
-    coleifer/sqlite-web
+    sqlite-web:local \
     db_filename.db
 ```
 

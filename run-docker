@@ -7,8 +7,16 @@ fi
 
 default_port="8012"
 port=${2:-$default_port}
+image=${SQLITE_WEB_IMAGE:-sqlite-web:local}
 
-db_dir="$(realpath $(dirname "$1"))"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+db_dir="$(realpath "$(dirname "$1")")"
 db_file="$(basename "$1")"
+
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+  echo "Building local image: $image"
+  docker build -f "$script_dir/docker/Dockerfile" -t "$image" "$script_dir"
+fi
+
 echo "Starting on: http://0.0.0.0:$port"
-docker run -it --rm -p "$port:8080" -v $db_dir:/data ghcr.io/coleifer/sqlite-web "$db_file" 
+docker run -it --rm -p "$port:8080" -v "$db_dir:/data" "$image" "$db_file"
